@@ -572,3 +572,33 @@ def test_a_repointed_endpoint_does_not_affect_bedrock(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid/anthropic")
     model = resolve_web_fetch_model("bedrock/global.anthropic.claude-opus-4-8", None)
     assert model.get_config()["model_id"] == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+async def test_web_fetch_drops_expired_entries_once_ttl_passes(monkeypatch):
+    """Expired entries must not linger: the cache is documented as a 15-minute cache."""
+    fake_now = [1000.0]
+    monkeypatch.setattr(web_fetch_module, "time", SimpleNamespace(monotonic=lambda: fake_now[0]))
+
+    async def fake_fetch(sandbox, url, transport):
+        return url, "content"
+
+    monkeypatch.setattr(web_fetch_module, "_fetch_text", fake_fetch)
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        async def invoke_async(self, prompt):
+            return "ok"
+
+    monkeypatch.setattr(web_fetch_module, "Agent", FakeAgent)
+
+    tool = make_web_fetch(model=object())
+    context = _context(_Sandbox())
+    await tool._tool_func(url="https://first.example.com", prompt="p", tool_context=context)
+    assert set(tool._cache) == {"https://first.example.com"}
+
+    fake_now[0] += web_fetch_module._CACHE_TTL_SECONDS + 1
+    await tool._tool_func(url="https://second.example.com", prompt="p", tool_context=context)
+
+    assert set(tool._cache) == {"https://second.example.com"}

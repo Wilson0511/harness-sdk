@@ -71,6 +71,19 @@ def _validate_url(url: str) -> str:
     return url
 
 
+def _evict_expired(cache: dict[str, tuple[float, str, str]], now: float) -> None:
+    """Drop entries whose TTL has passed.
+
+    The cache is documented as holding pages for 15 minutes, but nothing removed
+    an entry that was never fetched again, so every distinct URL ever fetched
+    stayed in memory for the life of the process. Sweeping on insert bounds the
+    cache to the URLs of the last TTL window.
+    """
+    expired = [url for url, entry in cache.items() if entry[0] <= now]
+    for url in expired:
+        del cache[url]
+
+
 def _curl_command(url: str) -> str:
     # -g keeps ``{}``/``[]`` in the URL literal; --proto/--proto-redir keep the request and any redirect on
     # http(s) (curl would otherwise follow a redirect to ftp://); --fail turns HTTP errors into a non-zero
@@ -229,7 +242,9 @@ def make_web_fetch(*, model: Model, transport: WebFetchTransport = "curl") -> An
                 resolved_url, text = await _fetch_text(tool_context.agent.sandbox, url, transport)
             except Exception as exc:
                 return f"Failed to fetch {url}: {exc}"
-            cache[url] = (time.monotonic() + _CACHE_TTL_SECONDS, resolved_url, text)
+            now = time.monotonic()
+            _evict_expired(cache, now)
+            cache[url] = (now + _CACHE_TTL_SECONDS, resolved_url, text)
 
         if not prompt.strip():
             return text
@@ -240,4 +255,5 @@ def make_web_fetch(*, model: Model, transport: WebFetchTransport = "curl") -> An
         )
         return str(result)
 
+    web_fetch._cache = cache
     return web_fetch
